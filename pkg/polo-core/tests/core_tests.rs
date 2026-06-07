@@ -138,7 +138,10 @@ fn tx_id_display_parses() {
 fn schema_accepts_correct_type() {
     let mut attrs = HashMap::new();
     attrs.insert("age".into(), AttrSpec::new(AttrType::Int));
-    let schema = Schema { attrs, strict: false };
+    let schema = Schema {
+        attrs,
+        strict: false,
+    };
 
     assert!(schema.validate(&Attr::new("age"), &Value::Int(30)).is_ok());
 }
@@ -147,7 +150,10 @@ fn schema_accepts_correct_type() {
 fn schema_rejects_wrong_type() {
     let mut attrs = HashMap::new();
     attrs.insert("age".into(), AttrSpec::new(AttrType::Int));
-    let schema = Schema { attrs, strict: false };
+    let schema = Schema {
+        attrs,
+        strict: false,
+    };
 
     let err = schema.validate(&Attr::new("age"), &Value::Str("thirty".into()));
     assert!(err.is_err());
@@ -155,14 +161,20 @@ fn schema_rejects_wrong_type() {
 
 #[test]
 fn schema_strict_mode_rejects_unknown_attr() {
-    let schema = Schema { attrs: HashMap::new(), strict: true };
+    let schema = Schema {
+        attrs: HashMap::new(),
+        strict: true,
+    };
     let err = schema.validate(&Attr::new("unknown"), &Value::Null);
     assert!(err.is_err());
 }
 
 #[test]
 fn schema_non_strict_allows_unknown_attr() {
-    let schema = Schema { attrs: HashMap::new(), strict: false };
+    let schema = Schema {
+        attrs: HashMap::new(),
+        strict: false,
+    };
     assert!(schema.validate(&Attr::new("unknown"), &Value::Null).is_ok());
 }
 
@@ -170,7 +182,10 @@ fn schema_non_strict_allows_unknown_attr() {
 fn schema_any_accepts_all_types() {
     let mut attrs = HashMap::new();
     attrs.insert("flex".into(), AttrSpec::new(AttrType::Any));
-    let schema = Schema { attrs, strict: false };
+    let schema = Schema {
+        attrs,
+        strict: false,
+    };
 
     let attr = Attr::new("flex");
     for v in [
@@ -181,7 +196,10 @@ fn schema_any_accepts_all_types() {
         Value::Null,
         Value::Json(serde_json::json!(1)),
     ] {
-        assert!(schema.validate(&attr, &v).is_ok(), "Any should accept {v:?}");
+        assert!(
+            schema.validate(&attr, &v).is_ok(),
+            "Any should accept {v:?}"
+        );
     }
 }
 
@@ -234,10 +252,9 @@ fn pql_parse_select_star() {
 
 #[test]
 fn pql_parse_with_entity_filter() {
-    let q = polo_core::pql::parse(
-        "SELECT entity, attr, value FROM default WHERE entity = 'user/1'",
-    )
-    .unwrap();
+    let q =
+        polo_core::pql::parse("SELECT entity, attr, value FROM default WHERE entity = 'user/1'")
+            .unwrap();
     assert!(q.filter.is_some());
 }
 
