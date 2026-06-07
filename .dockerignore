@@ -1,0 +1,9 @@
+target/
+bin/
+*.db
+*.db-shm
+*.db-wal
+.git/
+.github/
+docs/
+*.md

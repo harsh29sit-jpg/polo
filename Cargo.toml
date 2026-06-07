@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "pkg/polo-core",
+    "pkg/polo-client",
+    "internal/polo-store",
+    "internal/polo-server",
+    "cmd/polo",
+    "cmd/polod",
+]
+default-members = ["cmd/polo", "cmd/polod"]
+
+[workspace.package]
+version    = "0.1.0"
+edition    = "2021"
+license    = "MIT"
+authors    = ["Aryan Shirbhate <harsh29sit@gmail.com>"]
+repository = "https://github.com/harsyng/polo"
+
+[workspace.dependencies]
+polo-core   = { path = "pkg/polo-core" }
+polo-store  = { path = "internal/polo-store" }
+polo-server = { path = "internal/polo-server" }
+polo-client = { path = "pkg/polo-client" }
+
+tokio              = { version = "1",    features = ["full"] }
+axum               = { version = "0.7",  features = ["ws", "macros"] }
+tower              = { version = "0.4" }
+tower-http         = { version = "0.5",  features = ["cors", "trace", "request-id"] }
+serde              = { version = "1",    features = ["derive"] }
+serde_json         = { version = "1" }
+rusqlite           = { version = "0.31", features = ["bundled"] }
+uuid               = { version = "1",    features = ["v4", "serde"] }
+chrono             = { version = "0.4",  features = ["serde"] }
+thiserror          = { version = "1" }
+anyhow             = { version = "1" }
+tracing            = { version = "0.1" }
+tracing-subscriber = { version = "0.3",  features = ["env-filter", "json"] }
+clap               = { version = "4",    features = ["derive", "env"] }
+reqwest            = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+dashmap            = { version = "5" }
+parking_lot        = { version = "0.12" }
+tokio-stream       = { version = "0.1" }
+futures            = { version = "0.3" }
+async-trait        = { version = "0.1" }

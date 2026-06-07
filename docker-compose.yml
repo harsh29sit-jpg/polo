@@ -1,0 +1,23 @@
+services:
+  polod:
+    image: polo:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5432:5432"
+    volumes:
+      - polo-data:/data
+    environment:
+      POLO_LOG: info
+      # POLO_TOKEN: your-secret-token
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "polo", "--addr", "http://localhost:5432", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  polo-data:
