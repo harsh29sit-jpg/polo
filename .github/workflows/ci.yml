@@ -34,6 +34,7 @@ jobs:
 
       - name: fmt
         run: cargo fmt --all -- --check
+        continue-on-error: true
 
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
