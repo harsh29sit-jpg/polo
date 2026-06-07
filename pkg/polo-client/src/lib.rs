@@ -417,6 +417,94 @@ impl PoloClient {
             .await
             .map_err(|e| ClientError::Parse(e.to_string()))
     }
+
+    pub async fn put_tag(&self, label: &str, tx_id: &str) -> Result<(), ClientError> {
+        let url = format!("{}/v1/tags/{}", self.base, label);
+        let body = serde_json::json!({ "tx_id": tx_id });
+        let resp = self.client.put(&url).json(&body).send().await?;
+        self.check_response(resp).await?;
+        Ok(())
+    }
+
+    pub async fn get_tag(&self, label: &str) -> Result<TagEntry, ClientError> {
+        let url = format!("{}/v1/tags/{}", self.base, label);
+        let resp = self.client.get(&url).send().await?;
+        self.check_response(resp)
+            .await?
+            .json()
+            .await
+            .map_err(|e| ClientError::Parse(e.to_string()))
+    }
+
+    pub async fn delete_tag(&self, label: &str) -> Result<(), ClientError> {
+        let url = format!("{}/v1/tags/{}", self.base, label);
+        let resp = self.client.delete(&url).send().await?;
+        self.check_response(resp).await?;
+        Ok(())
+    }
+
+    pub async fn list_tags(&self) -> Result<Vec<TagEntry>, ClientError> {
+        let url = format!("{}/v1/tags", self.base);
+        let resp = self.client.get(&url).send().await?;
+        self.check_response(resp)
+            .await?
+            .json()
+            .await
+            .map_err(|e| ClientError::Parse(e.to_string()))
+    }
+
+    pub async fn stats(&self) -> Result<serde_json::Value, ClientError> {
+        let url = format!("{}/v1/stats", self.base);
+        let resp = self.client.get(&url).send().await?;
+        self.check_response(resp)
+            .await?
+            .json()
+            .await
+            .map_err(|e| ClientError::Parse(e.to_string()))
+    }
+
+    pub async fn dump(&self) -> Result<String, ClientError> {
+        let url = format!("{}/v1/{}/dump", self.base, self.ns);
+        let resp = self.client.get(&url).send().await?;
+        self.check_response(resp)
+            .await?
+            .text()
+            .await
+            .map_err(|e| ClientError::Parse(e.to_string()))
+    }
+
+    pub async fn restore(&self, ndjson: &str) -> Result<serde_json::Value, ClientError> {
+        let url = format!("{}/v1/{}/restore", self.base, self.ns);
+        let resp = self
+            .client
+            .post(&url)
+            .header("content-type", "application/x-ndjson")
+            .body(ndjson.to_string())
+            .send()
+            .await?;
+        self.check_response(resp)
+            .await?
+            .json()
+            .await
+            .map_err(|e| ClientError::Parse(e.to_string()))
+    }
+
+    pub async fn list_entities(&self, branch: Option<&str>) -> Result<Vec<String>, ClientError> {
+        let br = branch.unwrap_or(&self.branch);
+        let url = format!("{}/v1/{}/entities?branch={}", self.base, self.ns, br);
+        let resp = self.client.get(&url).send().await?;
+        self.check_response(resp)
+            .await?
+            .json()
+            .await
+            .map_err(|e| ClientError::Parse(e.to_string()))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagEntry {
+    pub label: String,
+    pub tx_id: String,
 }
 
 #[derive(Debug, Default)]

@@ -15,7 +15,7 @@ version    = "0.1.0"
 edition    = "2021"
 license    = "MIT"
 authors    = ["Aryan Shirbhate <harsh29sit@gmail.com>"]
-repository = "https://github.com/harsyng/polo"
+repository = "https://github.com/harsh29sit-jpg/polo"
 
 [workspace.dependencies]
 polo-core   = { path = "pkg/polo-core" }

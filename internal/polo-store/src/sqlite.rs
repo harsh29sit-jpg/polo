@@ -11,8 +11,10 @@ use polo_core::{
     db::{RecordParams, RecordResult, RetractParams, ScanQuery},
     error::{Error, StorageError},
     fact::{Attr, BranchName, EntityId, Fact, FactId, Namespace, TxId, Value},
+    gc::{GcParams, GcReport},
     merge::{ConflictEntry, ConflictResolution, DiffEntry, DiffParams, MergeParams, MergeResult},
     namespace::{MergePolicy, NamespaceInfo, NamespaceOpts},
+    stats::StoreStats,
     tx::Transaction,
     Store,
 };
@@ -105,6 +107,11 @@ impl SqliteStore {
             CREATE TABLE IF NOT EXISTS idempotency_cache (
                 key            TEXT PRIMARY KEY,
                 fact_id        TEXT NOT NULL,
+                tx_id          TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS tags (
+                label          TEXT PRIMARY KEY,
                 tx_id          TEXT NOT NULL
             );
             "#,
@@ -985,6 +992,284 @@ impl Store for SqliteStore {
 
         entries.sort_by(|a, b| a.entity.cmp(&b.entity).then(a.attr.cmp(&b.attr)));
         Ok(entries)
+    }
+
+    async fn gc(&self, p: GcParams) -> Result<GcReport, Error> {
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            let before_ms = p.before_ms.map(|v| v as i64);
+            let branch_str = p.branch.as_ref().map(|b| b.as_str().to_string());
+
+            let facts_removed = match (before_ms, branch_str.as_deref()) {
+                (None, None) => {
+                    let n: i64 = conn
+                        .query_row("SELECT COUNT(*) FROM facts WHERE retracted = 1", [], |r| r.get(0))
+                        .unwrap_or(0);
+                    if !p.dry_run {
+                        conn.execute("DELETE FROM facts WHERE retracted = 1", [])
+                            .map_err(|e| storage_err(e.to_string()))?;
+                    }
+                    n
+                }
+                (Some(ms), None) => {
+                    let n: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM facts WHERE retracted = 1 AND tx_time < ?1",
+                            params![ms],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(0);
+                    if !p.dry_run {
+                        conn.execute(
+                            "DELETE FROM facts WHERE retracted = 1 AND tx_time < ?1",
+                            params![ms],
+                        )
+                        .map_err(|e| storage_err(e.to_string()))?;
+                    }
+                    n
+                }
+                (None, Some(b)) => {
+                    let n: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM facts WHERE retracted = 1 AND branch = ?1",
+                            params![b],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(0);
+                    if !p.dry_run {
+                        conn.execute(
+                            "DELETE FROM facts WHERE retracted = 1 AND branch = ?1",
+                            params![b],
+                        )
+                        .map_err(|e| storage_err(e.to_string()))?;
+                    }
+                    n
+                }
+                (Some(ms), Some(b)) => {
+                    let n: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM facts WHERE retracted = 1 AND tx_time < ?1 AND branch = ?2",
+                            params![ms, b],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(0);
+                    if !p.dry_run {
+                        conn.execute(
+                            "DELETE FROM facts WHERE retracted = 1 AND tx_time < ?1 AND branch = ?2",
+                            params![ms, b],
+                        )
+                        .map_err(|e| storage_err(e.to_string()))?;
+                    }
+                    n
+                }
+            };
+
+            let tx_removed = if !p.dry_run {
+                conn.execute(
+                    "DELETE FROM transactions WHERE id NOT IN (SELECT DISTINCT tx_id FROM facts)",
+                    [],
+                )
+                .map_err(|e| storage_err(e.to_string()))? as usize
+            } else {
+                0
+            };
+
+            Ok(GcReport {
+                facts_removed: facts_removed as usize,
+                transactions_removed: tx_removed,
+                dry_run: p.dry_run,
+            })
+        })
+        .await
+        .map_err(|e| Error::Storage(StorageError::Join(e.to_string())))?
+    }
+
+    async fn stats(&self) -> Result<StoreStats, Error> {
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+
+            let namespaces: i64 = conn
+                .query_row("SELECT COUNT(*) FROM namespaces", [], |r| r.get(0))
+                .unwrap_or(0);
+            let branches: i64 = conn
+                .query_row("SELECT COUNT(*) FROM branches", [], |r| r.get(0))
+                .unwrap_or(0);
+            let facts: i64 = conn
+                .query_row("SELECT COUNT(*) FROM facts WHERE retracted = 0", [], |r| r.get(0))
+                .unwrap_or(0);
+            let retracted: i64 = conn
+                .query_row("SELECT COUNT(*) FROM facts WHERE retracted = 1", [], |r| r.get(0))
+                .unwrap_or(0);
+            let transactions: i64 = conn
+                .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+                .unwrap_or(0);
+            let oldest_tx: i64 = conn
+                .query_row("SELECT COALESCE(MIN(tx_time), 0) FROM facts", [], |r| r.get(0))
+                .unwrap_or(0);
+            let newest_tx: i64 = conn
+                .query_row("SELECT COALESCE(MAX(tx_time), 0) FROM facts", [], |r| r.get(0))
+                .unwrap_or(0);
+            let page_count: i64 = conn
+                .query_row("PRAGMA page_count", [], |r| r.get(0))
+                .unwrap_or(0);
+            let page_size: i64 = conn
+                .query_row("PRAGMA page_size", [], |r| r.get(0))
+                .unwrap_or(4096);
+
+            Ok(StoreStats {
+                namespaces: namespaces as usize,
+                branches: branches as usize,
+                facts: facts as usize,
+                retracted: retracted as usize,
+                transactions: transactions as usize,
+                oldest_tx: oldest_tx as u64,
+                newest_tx: newest_tx as u64,
+                estimated_bytes: (page_count * page_size) as u64,
+            })
+        })
+        .await
+        .map_err(|e| Error::Storage(StorageError::Join(e.to_string())))?
+    }
+
+    async fn list_entities(
+        &self,
+        ns: &Namespace,
+        branch: &BranchName,
+    ) -> Result<Vec<EntityId>, Error> {
+        let conn = Arc::clone(&self.conn);
+        let ns_str = ns.as_str().to_string();
+        let branch_str = branch.as_str().to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT DISTINCT entity FROM facts \
+                     WHERE namespace = ?1 AND branch = ?2 AND retracted = 0 \
+                     ORDER BY entity",
+                )
+                .map_err(|e| storage_err(e.to_string()))?;
+            let entities = stmt
+                .query_map(params![ns_str, branch_str], |row| {
+                    Ok(EntityId::new(row.get::<_, String>(0)?))
+                })
+                .map_err(|e| storage_err(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| storage_err(e.to_string()))?;
+            Ok(entities)
+        })
+        .await
+        .map_err(|e| Error::Storage(StorageError::Join(e.to_string())))?
+    }
+
+    async fn list_attrs(
+        &self,
+        ns: &Namespace,
+        branch: &BranchName,
+        entity: &EntityId,
+    ) -> Result<Vec<Attr>, Error> {
+        let conn = Arc::clone(&self.conn);
+        let ns_str = ns.as_str().to_string();
+        let branch_str = branch.as_str().to_string();
+        let entity_str = entity.as_str().to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT DISTINCT attr FROM facts \
+                     WHERE namespace = ?1 AND branch = ?2 AND entity = ?3 AND retracted = 0 \
+                     ORDER BY attr",
+                )
+                .map_err(|e| storage_err(e.to_string()))?;
+            let attrs = stmt
+                .query_map(params![ns_str, branch_str, entity_str], |row| {
+                    Ok(Attr::new(row.get::<_, String>(0)?))
+                })
+                .map_err(|e| storage_err(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| storage_err(e.to_string()))?;
+            Ok(attrs)
+        })
+        .await
+        .map_err(|e| Error::Storage(StorageError::Join(e.to_string())))?
+    }
+
+    async fn put_tag(&self, label: &str, tx_id: &TxId) -> Result<(), Error> {
+        let conn = Arc::clone(&self.conn);
+        let label = label.to_string();
+        let tx_id_str = tx_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            conn.execute(
+                "INSERT OR REPLACE INTO tags (label, tx_id) VALUES (?1, ?2)",
+                params![label, tx_id_str],
+            )
+            .map_err(|e| storage_err(e.to_string()))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::Storage(StorageError::Join(e.to_string())))?
+    }
+
+    async fn get_tag(&self, label: &str) -> Result<TxId, Error> {
+        let conn = Arc::clone(&self.conn);
+        let label = label.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            let row: Option<String> = conn
+                .query_row(
+                    "SELECT tx_id FROM tags WHERE label = ?1",
+                    params![label],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|e| storage_err(e.to_string()))?;
+            match row {
+                Some(s) => Ok(TxId(s.parse().map_err(|_| Error::other("corrupt tag tx_id"))?)),
+                None => Err(Error::TagNotFound(label)),
+            }
+        })
+        .await
+        .map_err(|e| Error::Storage(StorageError::Join(e.to_string())))?
+    }
+
+    async fn delete_tag(&self, label: &str) -> Result<(), Error> {
+        let conn = Arc::clone(&self.conn);
+        let label = label.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            let n = conn
+                .execute("DELETE FROM tags WHERE label = ?1", params![label])
+                .map_err(|e| storage_err(e.to_string()))?;
+            if n == 0 {
+                return Err(Error::TagNotFound(label));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::Storage(StorageError::Join(e.to_string())))?
+    }
+
+    async fn list_tags(&self) -> Result<Vec<(String, TxId)>, Error> {
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock();
+            let mut stmt = conn
+                .prepare("SELECT label, tx_id FROM tags ORDER BY label")
+                .map_err(|e| storage_err(e.to_string()))?;
+            let pairs = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(|e| storage_err(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| storage_err(e.to_string()))?;
+            Ok(pairs
+                .into_iter()
+                .map(|(l, t)| (l, TxId(t.parse().unwrap_or_default())))
+                .collect())
+        })
+        .await
+        .map_err(|e| Error::Storage(StorageError::Join(e.to_string())))?
     }
 
     async fn close(&self) {

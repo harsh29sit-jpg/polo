@@ -1,6 +1,10 @@
+pub mod backup;
 pub mod branches;
+pub mod entities;
 pub mod facts;
 pub mod health;
 pub mod namespaces;
 pub mod query;
+pub mod stats;
 pub mod stream;
+pub mod tags;

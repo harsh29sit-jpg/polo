@@ -57,6 +57,18 @@ pub fn build_router(state: AppState, cors_origin: Option<&str>) -> Router {
         .route("/v1/:ns/diff", get(api::branches::diff))
         // PQL
         .route("/v1/:ns/query", post(api::query::run_query))
+        // entities
+        .route("/v1/:ns/entities", get(api::entities::list_entities))
+        // dump / restore
+        .route("/v1/:ns/dump", get(api::backup::dump_namespace))
+        .route("/v1/:ns/restore", post(api::backup::restore_namespace))
+        // tags (global across namespaces)
+        .route("/v1/tags", get(api::tags::list_tags))
+        .route("/v1/tags/:label", get(api::tags::get_tag))
+        .route("/v1/tags/:label", axum::routing::put(api::tags::put_tag))
+        .route("/v1/tags/:label", delete(api::tags::delete_tag))
+        // store stats
+        .route("/v1/stats", get(api::stats::get_stats))
         // WebSocket stream
         .route("/v1/stream", get(api::stream::ws_stream))
         .layer(middleware::from_fn_with_state(

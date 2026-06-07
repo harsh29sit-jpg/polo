@@ -104,6 +104,27 @@ enum Cmd {
     /// Run a PQL query
     Query { pql: String },
 
+    /// Tag management (point a label at a transaction)
+    Tag {
+        #[command(subcommand)]
+        sub: TagCmd,
+    },
+
+    /// Show store-wide statistics
+    Stats,
+
+    /// List known entities on a branch
+    Entities,
+
+    /// Dump a namespace to NDJSON (stdout)
+    Dump,
+
+    /// Restore a namespace from NDJSON (stdin or --file)
+    Restore {
+        #[arg(long, short)]
+        file: Option<String>,
+    },
+
     /// Check server connectivity
     Ping,
 
@@ -120,6 +141,18 @@ enum BranchCmd {
         from: Option<String>,
     },
     Delete { name: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum TagCmd {
+    /// List all tags
+    List,
+    /// Set a tag to a transaction ID
+    Put { label: String, tx_id: String },
+    /// Get a tag's transaction ID
+    Get { label: String },
+    /// Delete a tag
+    Del { label: String },
 }
 
 #[tokio::main]
@@ -310,6 +343,90 @@ async fn main() -> Result<()> {
             if cli.json || true {
                 // Always JSON for query output — tabular would need schema
                 println!("{}", serde_json::to_string_pretty(&rows)?);
+            }
+        }
+
+        Cmd::Tag { sub } => match sub {
+            TagCmd::List => {
+                let tags = client.list_tags().await?;
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&tags)?);
+                } else if tags.is_empty() {
+                    println!("(no tags)");
+                } else {
+                    for t in &tags {
+                        println!("{}  →  {}", t.label, t.tx_id);
+                    }
+                }
+            }
+            TagCmd::Put { label, tx_id } => {
+                client.put_tag(&label, &tx_id).await?;
+                println!("tagged  {}  →  {}", label, tx_id);
+            }
+            TagCmd::Get { label } => {
+                let t = client.get_tag(&label).await?;
+                if cli.json {
+                    println!("{}", serde_json::to_string_pretty(&t)?);
+                } else {
+                    println!("{}  →  {}", t.label, t.tx_id);
+                }
+            }
+            TagCmd::Del { label } => {
+                client.delete_tag(&label).await?;
+                println!("deleted tag '{}'", label);
+            }
+        },
+
+        Cmd::Stats => {
+            let stats = client.stats().await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&stats)?);
+            } else {
+                // Print as key: value table
+                if let Some(obj) = stats.as_object() {
+                    for (k, v) in obj {
+                        println!("{:<20}  {}", k, v);
+                    }
+                }
+            }
+        }
+
+        Cmd::Entities => {
+            let entities = client.list_entities(Some(&cli.branch)).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&entities)?);
+            } else {
+                for e in &entities {
+                    println!("{}", e);
+                }
+            }
+        }
+
+        Cmd::Dump => {
+            let ndjson = client.dump().await?;
+            println!("{}", ndjson);
+        }
+
+        Cmd::Restore { file } => {
+            let ndjson = match file {
+                Some(path) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("reading {path}"))?,
+                None => {
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    std::io::stdin().read_to_string(&mut buf)?;
+                    buf
+                }
+            };
+            let result = client.restore(&ndjson).await?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else if let Some(obj) = result.as_object() {
+                println!(
+                    "imported={}  skipped={}",
+                    obj.get("imported").and_then(|v| v.as_u64()).unwrap_or(0),
+                    obj.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0),
+                );
             }
         }
 

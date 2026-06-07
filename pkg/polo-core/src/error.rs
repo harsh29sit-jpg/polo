@@ -23,6 +23,9 @@ pub enum Error {
     #[error("cannot delete branch '{0}': it is the root branch of namespace '{1}'")]
     CannotDeleteRoot(BranchName, Namespace),
 
+    #[error("tag '{0}' not found")]
+    TagNotFound(String),
+
     #[error("merge conflict: {0}")]
     Conflict(String),
 
@@ -69,6 +72,7 @@ impl Error {
                 | Error::TxNotFound(_)
                 | Error::NamespaceNotFound(_)
                 | Error::BranchNotFound(_, _)
+                | Error::TagNotFound(_)
         )
     }
 }

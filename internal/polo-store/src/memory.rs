@@ -9,9 +9,11 @@ use polo_core::{
     clock::{Clock, Hlc},
     db::{RecordParams, RecordResult, RetractParams, ScanQuery},
     error::Error,
-    fact::{BranchName, Fact, FactId, Namespace, TxId},
+    fact::{Attr, BranchName, EntityId, Fact, FactId, Namespace, TxId},
+    gc::{GcParams, GcReport},
     merge::{ConflictEntry, ConflictResolution, DiffEntry, DiffParams, MergeParams, MergeResult},
     namespace::{MergePolicy, NamespaceInfo, NamespaceOpts},
+    stats::StoreStats,
     tx::Transaction,
     Store,
 };
@@ -22,6 +24,7 @@ struct State {
     branches: HashMap<(String, String), BranchInfo>,
     namespaces: HashMap<String, NamespaceInfo>,
     idem_cache: HashMap<String, (FactId, TxId)>,
+    tags: HashMap<String, TxId>,
 }
 
 impl State {
@@ -54,6 +57,7 @@ impl State {
             branches,
             namespaces,
             idem_cache: HashMap::new(),
+            tags: HashMap::new(),
         }
     }
 }
@@ -509,6 +513,152 @@ impl Store for MemoryStore {
 
         entries.sort_by(|a, b| a.entity.cmp(&b.entity).then(a.attr.cmp(&b.attr)));
         Ok(entries)
+    }
+
+    async fn gc(&self, p: GcParams) -> Result<GcReport, Error> {
+        let mut state = self.state.write();
+        let before_ms = p.before_ms;
+        let branch = p.branch.clone();
+
+        let eligible: Vec<usize> = state
+            .facts
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                f.retracted
+                    && before_ms.map(|ms| f.tx_time.0 < ms).unwrap_or(true)
+                    && branch.as_ref().map(|b| b == &f.branch).unwrap_or(true)
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        let facts_removed = eligible.len();
+
+        if !p.dry_run {
+            // Remove in reverse index order so earlier indices stay valid
+            for i in eligible.into_iter().rev() {
+                state.facts.remove(i);
+            }
+
+            // Purge transactions that no longer have any associated facts
+            let live_tx_ids: std::collections::HashSet<_> =
+                state.facts.iter().map(|f| f.tx_id.clone()).collect();
+            let before = state.transactions.len();
+            state.transactions.retain(|t| live_tx_ids.contains(&t.id));
+            let tx_removed = before - state.transactions.len();
+
+            return Ok(GcReport {
+                facts_removed,
+                transactions_removed: tx_removed,
+                dry_run: false,
+            });
+        }
+
+        Ok(GcReport {
+            facts_removed,
+            transactions_removed: 0,
+            dry_run: true,
+        })
+    }
+
+    async fn stats(&self) -> Result<StoreStats, Error> {
+        let state = self.state.read();
+        let facts = state.facts.iter().filter(|f| !f.retracted).count();
+        let retracted = state.facts.iter().filter(|f| f.retracted).count();
+        let oldest_tx = state.facts.iter().map(|f| f.tx_time.0).min().unwrap_or(0);
+        let newest_tx = state.facts.iter().map(|f| f.tx_time.0).max().unwrap_or(0);
+
+        // Rough estimate: 256 bytes per fact, 128 per transaction
+        let estimated_bytes =
+            (state.facts.len() * 256 + state.transactions.len() * 128) as u64;
+
+        Ok(StoreStats {
+            namespaces: state.namespaces.len(),
+            branches: state.branches.len(),
+            facts,
+            retracted,
+            transactions: state.transactions.len(),
+            oldest_tx,
+            newest_tx,
+            estimated_bytes,
+        })
+    }
+
+    async fn list_entities(
+        &self,
+        ns: &Namespace,
+        branch: &BranchName,
+    ) -> Result<Vec<EntityId>, Error> {
+        let state = self.state.read();
+        let mut seen = std::collections::HashSet::new();
+        let mut entities = Vec::new();
+        for f in state.facts.iter() {
+            if f.namespace == *ns && f.branch == *branch && !f.retracted {
+                if seen.insert(f.entity.0.clone()) {
+                    entities.push(f.entity.clone());
+                }
+            }
+        }
+        entities.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(entities)
+    }
+
+    async fn list_attrs(
+        &self,
+        ns: &Namespace,
+        branch: &BranchName,
+        entity: &EntityId,
+    ) -> Result<Vec<Attr>, Error> {
+        let state = self.state.read();
+        let mut seen = std::collections::HashSet::new();
+        let mut attrs = Vec::new();
+        for f in state.facts.iter() {
+            if f.namespace == *ns
+                && f.branch == *branch
+                && f.entity == *entity
+                && !f.retracted
+            {
+                if seen.insert(f.attr.0.clone()) {
+                    attrs.push(f.attr.clone());
+                }
+            }
+        }
+        attrs.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(attrs)
+    }
+
+    async fn put_tag(&self, label: &str, tx_id: &TxId) -> Result<(), Error> {
+        let mut state = self.state.write();
+        state.tags.insert(label.to_string(), tx_id.clone());
+        Ok(())
+    }
+
+    async fn get_tag(&self, label: &str) -> Result<TxId, Error> {
+        let state = self.state.read();
+        state
+            .tags
+            .get(label)
+            .cloned()
+            .ok_or_else(|| Error::TagNotFound(label.to_string()))
+    }
+
+    async fn delete_tag(&self, label: &str) -> Result<(), Error> {
+        let mut state = self.state.write();
+        if state.tags.remove(label).is_none() {
+            return Err(Error::TagNotFound(label.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn list_tags(&self) -> Result<Vec<(String, TxId)>, Error> {
+        let state = self.state.read();
+        let mut pairs: Vec<(String, TxId)> = state
+            .tags
+            .iter()
+            .map(|(l, t)| (l.clone(), t.clone()))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(pairs)
     }
 
     async fn close(&self) {}
